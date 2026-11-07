@@ -1,0 +1,240 @@
+"""Test "unspecified" behavior which we cannot easily test in the Array API test suite.
+"""
+import itertools
+
+import pytest
+
+try:
+    import torch
+except ImportError:
+    pytestmark = pytest.skip(allow_module_level=True, reason="pytorch not found")
+
+from array_api_compat import torch as xp
+
+
+def test_reshape_copy():
+    array = xp.arange(12).reshape((3, 4))
+
+    view = xp.reshape(array, (4, 3), copy=False)
+    view[0, 0] = -1
+    assert array[0, 0] == -1
+
+    with pytest.raises(ValueError):
+        xp.reshape(array.T, (12,), copy=False)
+
+    copied = xp.reshape(array, (4, 3), copy=True)
+    copied[0, 0] = -2
+    assert array[0, 0] == -1
+
+
+class TestResultType:
+    def test_empty(self):
+        with pytest.raises(ValueError):
+            xp.result_type()
+
+    def test_one_arg(self):
+        for x in [1, 1.0, 1j, '...', None]:
+            with pytest.raises((ValueError, AttributeError)):
+                xp.result_type(x)
+
+        for x in [xp.float32, xp.int64, torch.complex64]:
+            assert xp.result_type(x) == x
+
+        for x in [xp.asarray(True, dtype=xp.bool), xp.asarray(1, dtype=xp.complex64)]:
+            assert xp.result_type(x) == x.dtype
+
+    def test_two_args(self):
+        # Only include here things "unspecified" in the spec
+
+        # scalar, tensor or tensor,tensor
+        for x, y in [
+            (1., 1j),
+            (1j, xp.arange(3)),
+            (True, xp.asarray(3.)),
+            (xp.ones(3) == 1, 1j*xp.ones(3)),
+        ]:
+            assert xp.result_type(x, y) == torch.result_type(x, y)
+
+        # dtype, scalar
+        for x, y in [
+            (1j, xp.int64),
+            (True, xp.float64),
+        ]:
+            assert xp.result_type(x, y) == torch.result_type(x, xp.empty([], dtype=y))
+
+        # dtype, dtype
+        for x, y in [
+            (xp.bool, xp.complex64)
+        ]:
+            xt, yt = xp.empty([], dtype=x), xp.empty([], dtype=y)
+            assert xp.result_type(x, y) == torch.result_type(xt, yt)
+
+    def test_multi_arg(self):
+        torch.set_default_dtype(torch.float32)
+
+        args = [1., 5, 3, torch.asarray([3], dtype=torch.float16), 5, 6, 1.]
+        assert xp.result_type(*args) == torch.float16
+
+        args = [1, 2, 3j, xp.arange(3, dtype=xp.float32), 4, 5, 6]
+        assert xp.result_type(*args) == xp.complex64
+
+        args = [1, 2, 3j, xp.float64, 4, 5, 6]
+        assert xp.result_type(*args) == xp.complex128
+
+        args = [1, 2, 3j, xp.float64, 4, xp.asarray(3, dtype=xp.int16), 5, 6, False]
+        assert xp.result_type(*args) == xp.complex128
+
+        i64 = xp.ones(1, dtype=xp.int64)
+        f16 = xp.ones(1, dtype=xp.float16)
+        for i in itertools.permutations([i64, f16, 1.0, 1.0]):
+            assert xp.result_type(*i) == xp.float16, f"{i}"
+
+        with pytest.raises(ValueError):
+            xp.result_type(1, 2, 3, 4)
+
+
+    @pytest.mark.parametrize("default_dt", ['float32', 'float64'])
+    @pytest.mark.parametrize("dtype_a",
+        (xp.int32, xp.int64, xp.float32, xp.float64, xp.complex64, xp.complex128)
+    )
+    @pytest.mark.parametrize("dtype_b", 
+        (xp.int32, xp.int64, xp.float32, xp.float64, xp.complex64, xp.complex128)
+    )
+    def test_gh_273(self, default_dt, dtype_a, dtype_b):
+        # Regression test for https://github.com/data-apis/array-api-compat/issues/273
+
+        try:
+            prev_default = torch.get_default_dtype()
+            default_dtype = getattr(torch, default_dt)
+            torch.set_default_dtype(default_dtype)
+
+            a = xp.asarray([2, 1], dtype=dtype_a)
+            b = xp.asarray([1, -1], dtype=dtype_b)
+            dtype_1 = xp.result_type(a, b, 1.0)
+            dtype_2 = xp.result_type(b, a, 1.0)
+            assert dtype_1 == dtype_2
+        finally:
+            torch.set_default_dtype(prev_default)
+
+
+def test_clip_vmap():
+    # https://github.com/data-apis/array-api-compat/issues/350
+    def apply_clip_compat(a):
+        return xp.clip(a, min=0, max=30)
+
+    a = xp.asarray([[5.1, 2.0, 64.1, -1.5]])
+
+    ref = apply_clip_compat(a)
+    v1 = torch.vmap(apply_clip_compat)
+    assert xp.all(v1(a) == ref)
+
+
+def test_meshgrid():
+    """Verify that array_api_compat.torch.meshgrid defaults to indexing='xy', and supports passing no arrays."""
+
+    x, y = xp.asarray([1, 2]), xp.asarray([4])
+
+    X, Y = xp.meshgrid(x, y)
+
+    # output of torch.meshgrid(x, y, indexing='xy') -- indexing='ij' is different
+    X_xy, Y_xy = xp.asarray([[1, 2]]), xp.asarray([[4, 4]])
+
+    assert X.shape == X_xy.shape
+    assert xp.all(X == X_xy)
+
+    assert Y.shape == Y_xy.shape
+    assert xp.all(Y == Y_xy)
+
+    # repeat with an explicit indexing
+    X, Y = xp.meshgrid(x, y, indexing='ij')
+
+    # output of torch.meshgrid(x, y, indexing='ij')
+    X_ij, Y_ij = xp.asarray([[1], [2]]), xp.asarray([[4], [4]])
+
+    assert X.shape == X_ij.shape
+    assert xp.all(X == X_ij)
+
+    assert Y.shape == Y_ij.shape
+    assert xp.all(Y == Y_ij)
+
+    assert not xp.meshgrid()
+
+
+def test_argsort_stable():
+    """Verify that argsort defaults to a stable sort."""
+    # Bare pytorch defaults to an unstable sort, and the array_api_compat wrapper
+    # enforces the stable=True default.
+    # cf https://github.com/data-apis/array-api-compat/pull/356 and
+    # https://github.com/data-apis/array-api-tests/pull/390#issuecomment-3452868329
+
+    t = xp.zeros(50)    # should be >16
+    assert xp.all(xp.argsort(t) == xp.arange(50))
+
+
+def test_round():
+    """Verify the out= argument of xp.round with complex inputs."""
+    x = torch.as_tensor([1.23456786]*3) + 3.456789j
+    o = torch.empty(3, dtype=torch.complex64)
+    r = xp.round(x, decimals=1, out=o)
+    assert xp.all(r == o)
+    assert r is o
+
+
+def test_dynamo_array_namespace():
+    """Check that torch.compiling array_namespace does not incur graph breaks."""
+    from array_api_compat import array_namespace
+
+    def foo(x):
+        xp = array_namespace(x)
+        return xp.multiply(x, x)
+
+    bar = torch.compile(fullgraph=True)(foo)
+
+    x = torch.arange(3)
+    y = bar(x)
+    assert xp.all(y == x**2)
+
+
+@pytest.mark.parametrize(
+    "func_name",
+    [
+        "atan2", "copysign", "hypot", "logaddexp", "maximum", "minimum",
+        "nextafter", "equal", "not_equal", "less", "less_equal", "greater",
+        "greater_equal",
+    ]
+)
+def test_binary_python_scalars(func_name):
+    # https://github.com/data-apis/array-api-compat/issues/271
+    func = getattr(xp, func_name)
+    x = xp.asarray([-1.5, 0.0, 2.0], dtype=xp.float32)
+    s = 0.5
+    y = xp.full(x.shape, s, dtype=xp.float32)
+
+    assert xp.all(func(x, s) == func(x, y))
+    assert xp.all(func(s, x) == func(y, x))
+    assert func(x, s).dtype == func(s, x).dtype == func(x, y).dtype
+
+    with pytest.raises(TypeError):
+        func(s, s)
+
+
+@pytest.mark.parametrize("func_name", ["logical_and", "logical_or", "logical_xor"])
+def test_logical_python_scalars(func_name):
+    func = getattr(xp, func_name)
+    x = xp.asarray([True, False])
+    for s in [True, False]:
+        y = xp.full(x.shape, s)
+        assert xp.all(func(x, s) == func(x, y))
+        assert xp.all(func(s, x) == func(y, x))
+
+
+def test_binary_python_scalars_promotion():
+    # Python scalars take the dtype of the array argument
+    x = xp.asarray([1, 5], dtype=xp.int8)
+    assert xp.maximum(x, 3).dtype == xp.int8
+    assert xp.minimum(3, x).dtype == xp.int8
+    assert xp.all(xp.maximum(3, x) == xp.asarray([3, 5], dtype=xp.int8))
+
+    x = xp.asarray([1., 5.], dtype=xp.float64)
+    assert xp.maximum(3.0, x).dtype == xp.float64
+    assert xp.all(xp.less(3, x) == xp.asarray([False, True]))

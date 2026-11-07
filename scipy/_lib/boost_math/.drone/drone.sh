@@ -1,0 +1,68 @@
+# Use, modification, and distribution are
+# subject to the Boost Software License, Version 1.0. (See accompanying
+# file LICENSE.txt)
+#
+# Copyright Rene Rivera 2020.
+# Copyright John Maddock 2021.
+
+#!/bin/bash
+
+set -ex
+export TRAVIS_BUILD_DIR=$(pwd)
+export DRONE_BUILD_DIR=$(pwd)
+export TRAVIS_BRANCH=$DRONE_BRANCH
+export VCS_COMMIT_ID=$DRONE_COMMIT
+export GIT_COMMIT=$DRONE_COMMIT
+export PATH=~/.local/bin:/usr/local/bin:$PATH
+
+echo '==================================> BEFORE_INSTALL'
+
+. .drone/before-install.sh
+
+echo '==================================> INSTALL'
+
+cd ..
+if [ "$DRONE_BRANCH" == "master" ] || [[ "$DRONE_BRANCH" == */master ]]; then
+    export BOOST_BRANCH="master"
+else
+    export BOOST_BRANCH="develop"
+fi
+git clone -b $BOOST_BRANCH --depth 1 https://github.com/boostorg/boost.git boost-root
+cd boost-root
+git submodule update --init tools/build
+git submodule update --init libs/config
+git submodule update --init libs/polygon
+git submodule update --init tools/boost_install
+git submodule update --init libs/headers
+git submodule update --init tools/boostdep
+cp -r $TRAVIS_BUILD_DIR/* libs/math
+python tools/boostdep/depinst/depinst.py math
+./bootstrap.sh
+./b2 headers
+
+if [[ $(uname) == "Linux" ]]; then
+    echo 0 | sudo tee /proc/sys/kernel/randomize_va_space
+fi
+
+echo '==================================> BEFORE_SCRIPT'
+
+. $DRONE_BUILD_DIR/.drone/before-script.sh
+
+echo '==================================> SCRIPT'
+
+# Contract a*b + c into fused multiply-add, across expressions, as every CI job does: gcc's ISO
+# -std=c++NN modes otherwise mean -ffp-contract=off. -O2 rather than b2's default of -O0: it is what
+# users build with, and gcc does not fuse below it. FMA is in the base aarch64 and s390x instruction
+# sets; x86 needs it switched on, where the CPU has it. The x86 runners without it (kh1 and kh2)
+# have no FMA instruction to contract into, so they build without fused operations.
+FMA_FLAGS="<cxxflags>-ffp-contract=fast <cxxflags>-O2"
+if [ "$(uname -m)" = x86_64 ] && grep -qw fma /proc/cpuinfo; then FMA_FLAGS="<cxxflags>-mfma $FMA_FLAGS"; fi
+echo "using $TOOLSET : : $COMPILER : <cxxflags>-std=$CXXSTD $OPTIONS $FMA_FLAGS ;" > ~/user-config.jam
+(cd libs/config/test && ../../../b2 print_config_info print_math_info toolset=$TOOLSET)
+# inlining=on: b2's debug variant adds -fno-inline, which is not how users optimize, and clang
+# needs over 6 GB for one multiprecision test that way.
+(cd libs/math/test && ../../../b2 -d0 -j3 toolset=$TOOLSET inlining=on $TEST_SUITE)
+
+echo '==================================> AFTER_SUCCESS'
+
+. $DRONE_BUILD_DIR/.drone/after-success.sh

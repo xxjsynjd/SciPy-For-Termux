@@ -1,0 +1,85 @@
+name: Tests
+on: [push, pull_request]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - numpy-version: '1.22'
+            python-version: '3.10'
+          - numpy-version: '1.26'
+            python-version: '3.10'
+          - numpy-version: '1.26'
+            python-version: '3.12'
+          - numpy-version: 'latest'
+            python-version: '3.10'
+          - numpy-version: 'latest'
+            python-version: '3.13'
+          - numpy-version: 'latest'
+            python-version: '3.14'
+          - numpy-version: 'dev'
+            python-version: '3.11'
+          - numpy-version: 'dev'
+            python-version: '3.13'
+          - numpy-version: 'dev'
+            python-version: '3.14'
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  #v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+
+          # Don't `pip install .[dev]` as it would pull in the whole torch cuda stack
+          python -m pip install array-api-strict
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+          if [ "${{ matrix.numpy-version }}" == "dev" ]; then
+            python -m pip install numpy --pre --extra-index-url https://pypi.anaconda.org/scientific-python-nightly-wheels/simple
+            python -m pip install dask[array] jax[cpu]
+            python -m pip install --index-url https://software.repos.intel.com/python/pypi dpnp
+            if [ "${{ matrix.python-version }}" != "3.14" ]; then
+               python -m pip install sparse ndonnx
+            fi
+          elif [ "${{ matrix.numpy-version }}" == "1.22" ]; then
+            python -m pip install 'numpy==1.22.*'
+          elif [ "${{ matrix.numpy-version }}" == "1.26" ]; then
+            python -m pip install 'numpy==1.26.*'
+          else
+            python -m pip install numpy
+            python -m pip install dask[array] jax[cpu]
+            python -m pip install --index-url https://software.repos.intel.com/python/pypi dpnp
+            if [ "${{ matrix.python-version }}" != "3.14" ]; then
+               python -m pip install sparse ndonnx
+            fi
+          fi
+
+          # mparray requires Python >=3.11 and NumPy >=2.
+          if [[ "${{ matrix.python-version }}" =~ ^3\.1[1-4]$ &&
+                "${{ matrix.numpy-version }}" =~ ^(latest|dev)$ ]]; then
+            python -m pip install mparray
+          fi
+ 
+      - name: Set environment variables  
+        run: echo "OCL_ICD_FILENAMES=$LD_LIBRARY_PATH/libintelocl.so" >> "$GITHUB_ENV"
+
+      - name: Dump pip environment
+        run: pip freeze
+
+      - name: Test it installs
+        run: python -m pip install .
+
+      - name: Run Tests
+        run: pytest -v
+
+      - name: Run vendoring tests
+        run: |
+          rm -rf vendor_tests/array_api_compat
+          cp -r src/array_api_compat vendor_tests/
+          pytest -v vendor_tests

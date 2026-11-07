@@ -1,0 +1,83 @@
+[/
+  Copyright 2019, Nick Thompson
+  Distributed under the Boost Software License, Version 1.0.
+  (See accompanying file LICENSE_1_0.txt or copy at
+  http://www.boost.org/LICENSE_1_0.txt).
+]
+
+[section:jacobi Jacobi Polynomials]
+
+[h4 Synopsis]
+
+``
+#include <boost/math/special_functions/jacobi.hpp>
+``
+
+   namespace boost{ namespace math{
+
+   template<typename Real>
+   Real jacobi(unsigned n, Real alpha, Real beta, Real x);
+
+   template<typename Real>
+   Real jacobi_derivative(unsigned n, Real alpha, Real beta, Real x, unsigned k);
+
+   template<typename Real>
+   Real jacobi_prime(unsigned n, Real alpha, Real beta, Real x);
+
+   template<typename Real>
+   Real jacobi_double_prime(unsigned n, Real alpha, Real beta, Real x);
+
+   template <class T>
+   std::vector<T> jacobi_zeros(unsigned n, T alpha, T beta);
+
+   template <class T, class ``__Policy``>
+   std::vector<T> jacobi_zeros(unsigned n, T alpha, T beta, const ``__Policy``&);
+
+   }} // namespaces
+
+Jacobi polynomials are a family of orthogonal polynomials.
+
+A basic usage is as follows:
+
+    using boost::math::jacobi;
+    double x = 0.5;
+    double alpha = 0.3;
+    double beta = 7.2;
+    unsigned n = 3;
+    double y = jacobi(n, alpha, beta, x);
+
+All derivatives of the Jacobi polynomials are available.
+The /k/-th derivative of the /n/-th Gegenbauer polynomial is given by
+
+    using boost::math::jacobi_derivative;
+    double x = 0.5;
+    double alpha = 0.3;
+    double beta = 7.2;
+    unsigned n = 3;
+    double y = jacobi_derivative(n, alpha, beta, x, k);
+
+For consistency with the rest of the library, `jacobi_prime` is provided which simply returns `jacobi_derivative(n, lambda, x,1)`.
+
+[$../graphs/jacobi.svg]
+
+`jacobi_zeros` returns the /n/ zeros of the Jacobi polynomial /P/[sub /n/][super ([alpha], [beta])], in increasing order;
+they all lie in (-1, 1). For /n/ = 0 the result is empty.
+[alpha] and [beta] must be finite and greater than -1, where the polynomials are orthogonal for the weight
+(1 - /x/)[super [alpha]] (1 + /x/)[super [beta]] on \[-1, 1\];
+otherwise the result is a vector of /n/ values returned by __domain_error.
+These are the abscissas of the [link math_toolkit.gauss_jacobi Gauss-Jacobi quadrature] rule.
+
+The zeros are found in O(/n/) operations by following the differential equation of the Jacobi functions
+from zero to zero in twice the working precision (Glaser, Liu and Rokhlin), and near the end points from the series of the polynomials there.
+Where that cannot vouch for a zero, the zeros come from the three-term recurrence instead, which overflows for large /n/ combined with
+large [alpha] or [beta] (in `double`, for example /n/ = 20000 and [alpha] = [beta] = 200): the result is then a vector of values returned by __evaluation_error.
+In our tests against high-precision values they are correctly rounded in `float`, `double` and 50-digit precision.
+
+[optional_policy]
+
+[h3 Implementation]
+
+The implementation uses the 3-term recurrence for the Jacobi polynomials, rising.
+
+
+[endsect]
